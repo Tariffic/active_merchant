@@ -161,10 +161,20 @@ module ActiveMerchant #:nodoc:
       end
 
       def purchase(money, creditcard, options = {})
-        MultiResponse.run do |r|
-          r.process{authorize(money, creditcard, options)}
-          r.process{capture(money, r.authorization, options)}
+        # if the nurl / rurl are set then we do 3D secure txns
+        if options[:nurl] || options[:rurl]
+          authorize_3D(money, creditcard, options)
+        else
+          MultiResponse.new.tap do |r|
+            r.process { authorize(money, creditcard, options) }
+            r.process { capture(money, r.authorization, options) }
+          end
         end
+      end
+
+      def authorize_3D(money, creditcard, options = {})
+        options.merge!(:money => money, :creditcard => creditcard)
+        commit_3D('securerx', build_3D_request(options))
       end
 
       def authorize(money, creditcard, options = {})
@@ -217,6 +227,19 @@ module ActiveMerchant #:nodoc:
         xml.target!
       end
 
+      def build_3D_request(options={})
+        xml = Builder::XmlMarkup.new
+        xml.instruct!
+
+        xml.tag! 'protocol', :ver => API_VERSION, :pgid => (test? ? TEST_ID_3DSECURE : @options[:login]), :pwd => @options[:password] do |protocol|
+          money      = options.delete(:money)
+          creditcard = options.delete(:creditcard)
+          build_3D_authorization(protocol, money, creditcard, options)
+        end
+
+        xml.target!
+      end
+
       def build_authorization(xml, money, creditcard, options={})
         xml.tag! 'authtx', {
           :cref  => options[:order_id],
@@ -231,6 +254,21 @@ module ActiveMerchant #:nodoc:
           :ip    => options[:ip]
         }
       end
+
+      def build_3D_authorization(xml, money, creditcard, options={})
+         xml.tag! 'authtx', {
+             :cref  => options[:order_id],
+             :cname => creditcard.name,
+             :cc    => creditcard.number,
+             :exp   => "#{format(creditcard.month, :two_digits)}#{format(creditcard.year, :four_digits)}",
+             :budp  => 0,
+             :amt   => amount(money),
+             :cur   => (options[:currency] || currency(money)),
+             :cvv   => creditcard.verification_value,
+             :nurl  => options[:nurl],
+             :rurl  => options[:rurl]
+         }
+       end
 
       def build_capture(xml, money, authorization, options={})
         xml.tag! 'settletx', {
@@ -261,11 +299,37 @@ module ActiveMerchant #:nodoc:
         hash
       end
 
+      def parse_3D(action, body)
+        hash = {}
+        xml  = REXML::Document.new(body)
+
+        response_action = 'securerx'
+        root            = REXML::XPath.first(xml.root, response_action)
+
+        # we might have gotten an error
+        if root.nil?
+          root = REXML::XPath.first(xml.root, 'errorrx')
+        end
+
+        root.attributes.each do |name, value|
+          hash[name.to_sym] = value
+        end
+        hash
+      end
+
       def commit(action, request, authorization = nil)
         response = parse(action, ssl_post(self.live_url, request))
         Response.new(successful?(response), message_from(response), response,
           :test           => test?,
           :authorization  => authorization ? authorization : response[:tid]
+        )
+      end
+
+      def commit_3D(action, request)
+        response = parse_3D(action, ssl_post(self.live_url, request))
+        Response.new(successful?(response), message_from(response), response,
+                     :test          => test?,
+                     :authorization => response[:tid]
         )
       end
 
