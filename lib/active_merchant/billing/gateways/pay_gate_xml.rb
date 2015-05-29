@@ -174,7 +174,7 @@ module ActiveMerchant #:nodoc:
 
       def authorize_3D(money, creditcard, options = {})
         options.merge!(:money => money, :creditcard => creditcard)
-        commit_3D('securerx', build_3D_request(options))
+        commit_3D(build_3D_request(options))
       end
 
       def authorize(money, creditcard, options = {})
@@ -303,8 +303,7 @@ module ActiveMerchant #:nodoc:
         hash = {}
         xml  = REXML::Document.new(body)
 
-        response_action = 'securerx'
-        root            = REXML::XPath.first(xml.root, response_action)
+        root            = REXML::XPath.first(xml.root, action)
 
         # we might have gotten an error
         if root.nil?
@@ -317,7 +316,15 @@ module ActiveMerchant #:nodoc:
         hash
       end
 
+      def request_type(request_xml)
+        xml  = REXML::Document.new(request_xml)
+        return "securerx" unless REXML::XPath.first(xml.root, "securerx").nil?
+        return "authrx" unless REXML::XPath.first(xml.root, "authrx").nil?
+        return "errorrx"
+      end
+
       def commit(action, request, authorization = nil)
+        binding.pry
         response = parse(action, ssl_post(self.live_url, request))
         Response.new(successful?(response), message_from(response), response,
           :test           => test?,
@@ -325,11 +332,12 @@ module ActiveMerchant #:nodoc:
         )
       end
 
-      def commit_3D(action, request)
-        response = parse_3D(action, ssl_post(self.live_url, request))
-        Response.new(successful?(response), message_from(response), response,
+      def commit_3D(request)
+        response = ssl_post(self.live_url, request)
+        parsed_response = parse_3D(request_type(response), response)
+        Response.new(successful?(parsed_response), message_from(parsed_response), parsed_response,
                      :test          => test?,
-                     :authorization => response[:tid]
+                     :authorization => parsed_response[:tid]
         )
       end
 
