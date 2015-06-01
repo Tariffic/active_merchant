@@ -324,7 +324,6 @@ module ActiveMerchant #:nodoc:
       end
 
       def commit(action, request, authorization = nil)
-        binding.pry
         response = parse(action, ssl_post(self.live_url, request))
         Response.new(successful?(response), message_from(response), response,
           :test           => test?,
